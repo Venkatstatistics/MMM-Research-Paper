@@ -1,0 +1,152 @@
+---
+title: "Investigation of Decomp.RSSD through KL Divergence and Chebyshev inequality"
+output: html_document
+date: "2024-04-08"
+---
+
+```{r setup, include=FALSE}
+library(FNN)
+library(ggplot2)
+library(patchwork)
+library(tidyr)
+library(purrr)
+library(Robyn)
+# import the data from robyn
+temp = read.csv("pareto_alldecomp_matrix.csv")
+pareto_models <- read.csv("pareto_hyperparameters.csv")
+str(pareto_models)
+```
+
+## R Markdown
+
+Robyn utilises a multi-objective optimization algorithm(nevergrad) that simultaneously minimizes the Normalized Mean Squared Error (NMSE) and the Business Error, leveraging the Decomposed Residual Sum of Squares approach. This report examines the predictions at both the optimal and worst points of the decomposed sum of squared business errors on the Pareto frontier. 
+
+We evaluate their optimality by analyzing the Kullback-Leibler divergence and applying the Chebyshev inequality by investigating the proportion of data which is clustered near the zero prediction error. Thus, in this report, the Best model corresponds to the Model with the Best business error while being at the pareto frontier, and the Worst model corresponds to the Worst Business error, while still being on the pareto frontier.
+
+```{r choice}
+#get the best and the worst models
+sorted_modesl = pareto_models[order(pareto_models$decomp.rssd), ]
+best_model = sorted_modesl[1,]
+print(best_model$solID)
+worst_model = sorted_modesl[dim(sorted_modesl)[1],]
+print(worst_model$solID)
+#get the true values
+true_vals = dt_simulated_weekly[7:(157+6),]$revenue
+##choose the best and the worst models from the rest
+worst_model_fits = temp[which(temp$solID == worst_model$solID),]
+best_model_fits = temp[which(temp$solID == best_model$solID),]
+```
+
+## Results
+
+First, we investigate the KL Divergence, and use the true values as the base distribution. 
+
+```{r kl_divergence}
+KL.divergence(true_vals, best_model_fits$depVarHat)
+KL.divergence(true_vals, worst_model_fits$depVarHat)
+```
+We see a lot of negative values for KL Divergence for the worst model on the pareto frontier. Thus, it is not recommended to make any conclusions from these results and we can look for the KL Divergence when using the true values as the target.
+
+```{r kl_divergence2}
+KL.divergence(best_model_fits$depVarHat, true_vals, k = 10)
+KL.divergence(worst_model_fits$depVarHat, true_vals, k = 10)
+```
+We see again, a negative value for the KL divergence when using 3-nearest neighbours for the estimation. Other than that, we see that the KL Divergence values are more reasonable, suggesting that the improved Business fit was attained by sacrificing some accuracy in terms of closer alignment in terms of KL Divergence. We show this graphically with  plot:
+
+```{r kl_divergence3}
+k = 30
+data_set = cbind.data.frame(1:k,
+KL.divergence(best_model_fits$depVarHat, true_vals, k = k),
+KL.divergence(worst_model_fits$depVarHat, true_vals, k = k))
+colnames(data_set) = c('X', 'Best', 'Worst')
+data_set = pivot_longer(data_set, cols = c('Best', 'Worst'))
+colnames(data_set) = c('X', 'Model', 'KL_div')
+
+ggplot(data = data_set) +
+  geom_smooth(mapping = aes(x = X, y = KL_div, colour = Model))+
+  geom_point(mapping = aes(x = X, y = KL_div, colour = Model))+
+  labs(x = "Number of neighbours considered", y = "KL Divergence", title = "KL Divergence of Best and Worst Model Fits") 
+```
+
+We see clearly from the Figure that the Worst model has a much better KL Divergence value compared to the Best Model, given we take the models from the pareto frontier.
+
+```{r}
+mean(KL.divergence(best_model_fits$depVarHat, true_vals, k = k)[24:30])
+mean(KL.divergence(worst_model_fits$depVarHat, true_vals, k = k)[24:30])
+```
+
+
+## Clustering of errors and Chebyshev inequality
+
+In this section, we make a comparison about the clustering of the data, and make comparisons with the help of the Chebyshev inequality. It is
+
+$$ \mathbf{P} ( \frac{|R_i - \mu_i|}{\sigma} \geq k ) \leq \frac{1}{k^2}$$
+for residuals $R_i$.
+
+We know that the mean value for residuals is 0 for the OLS fit, and the standard deviation is calculated from the sample. The justification behind this procedure is as follows -
+
+The errors from an OLS fit are orthogonal to the fitted values, and thus, they are assumed to be iid copies from an underlying distribution(which is normal in the 'ideal' case). This underlying distribution has mean 0 and some standard deviation, which is estimated from the sample. 
+
+Because we have 158 samples from this distribution, we can have an empirical estimate of the probability that
+$$ \mathbf{P} ( \frac{|R_i - \mu_i|}{\sigma} \geq k )$$
+by calculating 
+$$
+  \hat{\mathbf{P}} ( \frac{|R_i - \mu_i|}{\sigma} \geq k ) = \frac{ \Sigma_{i=1}^{158} \mathbb{1}_{ \{\frac{R_i}{\sigma} > k \}}}{158}
+$$
+for all values of k. We can compare this empirical estimate from the theoretical bound of $\frac{1}{k^2}$. Thus, we have the following -
+```{r }
+df1 = abs(best_model_fits$depVarHat -  true_vals)/sd(best_model_fits$depVarHat -  true_vals)
+df1 = data.frame(x = df1)
+df2 = abs(worst_model_fits$depVarHat - true_vals)/sd(worst_model_fits$depVarHat - true_vals)
+df2 = data.frame(x= df2)
+##Plots
+plot_best = ggplot(as.data.frame(df1), aes(x = x)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  geom_vline(xintercept = 0, color = "green",) +
+  geom_vline(xintercept = 2, color = "green") +
+  ggtitle("Std. abs. residuals, Best model")
+plot_worst = ggplot(df2, aes(x = x)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  geom_vline(xintercept = 0, color = "green") +
+  geom_vline(xintercept = 2, color = "green") +
+  ggtitle("Std. abs. residuals, Worst Model")
+
+plot_worst | plot_best
+percent_best = mean(df1$x >= 0 & df1$x <= 2) * 100
+percent_worst = mean(df2$x >= 0 & df2$x <= 2) * 100
+# paste("Percentage of Residuals between", 0, "and", 2, "(Best Model):", round(percent_best, 2), "%")
+# percent_worst = mean(df2$x >= 0 & df2$x <= 2) * 100
+# paste("Percentage of Residuals between", 0, "and", 2, "(Worst Model):", round(percent_worst, 2), "%")
+
+```
+We see comparable performance from both the models with respect to being two standard deviations from the mean, with 96.2% of the absolute standardised residuals for the Best Model and 95.6% for the Worst model, as shown in the Figures in green lines. Given this comparable performance, we look at a more detailed tabular version of the data -
+
+
+```{r}
+thresholds <- c(0.25, 0.5, 0.75, 1, 2**0.5, 1.5, 1.75, 2, 3, 4, 5)
+calculate_percentages <- function(df, thresholds) {
+  within_threshold <- map(thresholds, ~ df$x > .x)
+  percentages <- map_dbl(within_threshold, ~ mean(.x) * 100)
+  setNames(percentages, paste0(">", thresholds))
+}
+
+# Calculate percentages for df1 and df2
+percentages_df1 <- calculate_percentages(df1, thresholds)
+percentages_df2 <- calculate_percentages(df2, thresholds)
+chebyshev = ( 1 / thresholds**2) *100
+chebyshev[which(chebyshev >100)] = 100
+# Combine the results into a single data frame for easy comparison
+results_table <- data.frame(
+                            "Best Model (%)" = percentages_df1,
+                            "Worst Model (%)" = percentages_df2,
+                            "Theoretical Bound" = chebyshev)
+
+print(results_table)
+
+```
+From this table, we see that for the Best model, around 75% of the absolute standardised errors were beyond $0.25 \sigma$ from 0 for the best model, while only 65%  of the absolute standardised errors were beyond $0.25 \sigma$ from 0 for the worst model. Thus, besides saying that that both the models satisfy and validate the Chebyshev bounds, we see the trade-off between the prediction accuracy using NRMSE and the Business error from this table.
+
+## Conclusion
+Our analysis  using KL Divergence and Chebyshev inequality, revealed trade-offs between minimizing business error and predictive accuracy. While both models meet the theoretical bounds of the  Chebyshev's inequality, the  model with worse Business Error paradoxically showed better KL Divergence. 
+
+This underscores the complexity in defining "best" models, emphasizing the need for a balanced approach that considers both business impacts and alignment with data distribution. 
